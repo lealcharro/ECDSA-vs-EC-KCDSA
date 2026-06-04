@@ -9,8 +9,10 @@ Métricas medidas
   • verify   — verificación de una firma
 
 Para cada N se realizan REPS repeticiones tras WARMUP ejecuciones de
-calentamiento (no contabilizadas).  Se reportan media ± desviación
-estándar.
+calentamiento (no contabilizadas).  Se reporta el MÍNIMO ± desviación
+estándar: en benchmarking el ruido del sistema (planificador del SO, GC,
+frecuencia de CPU) solo AÑADE tiempo, por lo que el mínimo es el estimador
+más estable del coste real del algoritmo.
 
 Hipótesis a observar
 ─────────────────────
@@ -30,9 +32,13 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import gc
+import platform
 import secrets
 import statistics
+import sys
 import time
+from dataclasses import dataclass
 from typing import Callable
 
 from src.ec import SECP256K1
@@ -51,20 +57,48 @@ DEFAULT_WARMUP = 3
 # ──────────────────────────────────────────────────────────────────────
 
 def _timeit(fn: Callable, *args, reps: int) -> list[float]:
-    """Ejecuta fn(*args) *reps* veces; devuelve los tiempos en milisegundos."""
+    """Ejecuta fn(*args) *reps* veces; devuelve los tiempos en milisegundos.
+
+    El recolector de basura se desactiva durante la medición: una pausa de GC
+    en mitad de una ejecución inflaría arbitrariamente ese tiempo individual.
+    """
     times = []
-    for _ in range(reps):
-        t0 = time.perf_counter()
-        fn(*args)
-        times.append((time.perf_counter() - t0) * 1_000)
+    gc_estaba_activo = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(reps):
+            t0 = time.perf_counter()
+            fn(*args)
+            times.append((time.perf_counter() - t0) * 1_000)
+    finally:
+        if gc_estaba_activo:
+            gc.enable()
     return times
 
 
-def _stats(times: list[float]) -> tuple[float, float]:
-    """Devuelve (media_ms, desv_típica_ms)."""
-    mean  = statistics.mean(times)
-    stdev = statistics.stdev(times) if len(times) > 1 else 0.0
-    return mean, stdev
+@dataclass(frozen=True)
+class Stats:
+    """Estadísticas (en ms) de una serie de tiempos.
+
+    El *mínimo* es la métrica principal: el ruido del sistema solo suma
+    tiempo, así que la ejecución más rápida es la más limpia.  La mediana, la
+    media y la desviación se conservan como diagnóstico de variabilidad.
+    """
+
+    minimum: float
+    median: float
+    mean: float
+    std: float
+
+
+def _stats(times: list[float]) -> Stats:
+    """Resume una serie de tiempos; el mínimo es la métrica principal."""
+    return Stats(
+        minimum=min(times),
+        median=statistics.median(times),
+        mean=statistics.mean(times),
+        std=statistics.stdev(times) if len(times) > 1 else 0.0,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -79,12 +113,20 @@ def bench_ecdsa(sizes: list[int], reps: int, warmup: int) -> dict:
     # Un par de claves para todos los tamaños (keygen excluido de sign/verify)
     d, Q = ecdsa.keygen(CURVE)
 
+    # Verificación de cordura: nunca medir una implementación rota.  Si el
+    # round-trip falla, `verify` tomaría un camino corto (rechazo temprano) y
+    # los tiempos no representarían la verificación completa.
+    _m = b"benchmark sanity check"
+    if not ecdsa.verify(_m, ecdsa.sign(_m, d, CURVE), Q, CURVE):
+        raise RuntimeError(
+            "ECDSA: el round-trip sign/verify falló — medición abortada"
+        )
+
     # Benchmark de keygen por separado
     _timeit(ecdsa.keygen, CURVE, reps=warmup)
-    kg_times   = _timeit(ecdsa.keygen, CURVE, reps=reps)
-    kg_mean, kg_std = _stats(kg_times)
+    kg_times = _timeit(ecdsa.keygen, CURVE, reps=reps)
 
-    results: dict = {"keygen": (kg_mean, kg_std)}
+    results: dict = {"keygen": _stats(kg_times)}
 
     for n_bytes in sizes:
         msg = secrets.token_bytes(n_bytes)
@@ -99,6 +141,7 @@ def bench_ecdsa(sizes: list[int], reps: int, warmup: int) -> dict:
 
         # Verificación (reutilizar firma precalculada para medir solo verify)
         sig = ecdsa.sign(msg, d, CURVE)
+        assert ecdsa.verify(msg, sig, Q, CURVE)  # garantiza el camino completo
         verify_times = _timeit(ecdsa.verify, msg, sig, Q, CURVE, reps=reps)
 
         results[n_bytes] = {
@@ -112,11 +155,17 @@ def bench_ecdsa(sizes: list[int], reps: int, warmup: int) -> dict:
 def bench_ec_kcdsa(sizes: list[int], reps: int, warmup: int) -> dict:
     d, Q, h_cert = ec_kcdsa.keygen(CURVE)
 
-    _timeit(ec_kcdsa.keygen, CURVE, reps=warmup)
-    kg_times   = _timeit(ec_kcdsa.keygen, CURVE, reps=reps)
-    kg_mean, kg_std = _stats(kg_times)
+    # Verificación de cordura: nunca medir una implementación rota.
+    _m = b"benchmark sanity check"
+    if not ec_kcdsa.verify(_m, ec_kcdsa.sign(_m, d, h_cert, CURVE), Q, h_cert, CURVE):
+        raise RuntimeError(
+            "EC-KCDSA: el round-trip sign/verify falló — medición abortada"
+        )
 
-    results: dict = {"keygen": (kg_mean, kg_std)}
+    _timeit(ec_kcdsa.keygen, CURVE, reps=warmup)
+    kg_times = _timeit(ec_kcdsa.keygen, CURVE, reps=reps)
+
+    results: dict = {"keygen": _stats(kg_times)}
 
     for n_bytes in sizes:
         msg = secrets.token_bytes(n_bytes)
@@ -128,6 +177,7 @@ def bench_ec_kcdsa(sizes: list[int], reps: int, warmup: int) -> dict:
         sign_times = _timeit(ec_kcdsa.sign, msg, d, h_cert, CURVE, reps=reps)
 
         sig = ec_kcdsa.sign(msg, d, h_cert, CURVE)
+        assert ec_kcdsa.verify(msg, sig, Q, h_cert, CURVE)  # camino completo
         verify_times = _timeit(
             ec_kcdsa.verify, msg, sig, Q, h_cert, CURVE, reps=reps
         )
@@ -144,8 +194,9 @@ def bench_ec_kcdsa(sizes: list[int], reps: int, warmup: int) -> dict:
 # Output helpers
 # ──────────────────────────────────────────────────────────────────────
 
-def _ms(mean: float, std: float) -> str:
-    return f"{mean:7.2f} ± {std:5.2f}"
+def _ms(s: Stats) -> str:
+    """Formatea un Stats como 'mín ± σ' (ms); el mínimo es la métrica principal."""
+    return f"{s.minimum:7.2f} ± {s.std:5.2f}"
 
 
 def print_table(
@@ -174,30 +225,30 @@ def print_table(
     print("─" * W)
 
     # Fila de keygen
-    e_kg_m, e_kg_s = er["keygen"]
-    k_kg_m, k_kg_s = kr["keygen"]
-    kg_ratio = e_kg_m / k_kg_m if k_kg_m else 0
+    e_kg = er["keygen"]
+    k_kg = kr["keygen"]
+    kg_ratio = e_kg.minimum / k_kg.minimum if k_kg.minimum else 0
     print(
         f"{'keygen':>9} │ "
-        f"{_ms(e_kg_m, e_kg_s):^31} │ "
-        f"{_ms(k_kg_m, k_kg_s):^31} │ "
+        f"{_ms(e_kg):^31} │ "
+        f"{_ms(k_kg):^31} │ "
         f"{kg_ratio:^10.3f}  {'':^10}"
     )
     print("─" * W)
 
     for n_bytes in sizes:
-        es_m, es_s = er[n_bytes]["sign"]
-        ev_m, ev_s = er[n_bytes]["verify"]
-        ks_m, ks_s = kr[n_bytes]["sign"]
-        kv_m, kv_s = kr[n_bytes]["verify"]
+        es = er[n_bytes]["sign"]
+        ev = er[n_bytes]["verify"]
+        ks = kr[n_bytes]["sign"]
+        kv = kr[n_bytes]["verify"]
 
-        ratio_s = es_m / ks_m if ks_m else 0
-        ratio_v = ev_m / kv_m if kv_m else 0
+        ratio_s = es.minimum / ks.minimum if ks.minimum else 0
+        ratio_v = ev.minimum / kv.minimum if kv.minimum else 0
 
         print(
             f"{n_bytes:>9} │ "
-            f"{_ms(es_m, es_s):^31}  {_ms(ev_m, ev_s):^31} │ "
-            f"{_ms(ks_m, ks_s):^31}  {_ms(kv_m, kv_s):^31} │ "
+            f"{_ms(es):^31}  {_ms(ev):^31} │ "
+            f"{_ms(ks):^31}  {_ms(kv):^31} │ "
             f"{ratio_s:^10.3f}  {ratio_v:^10.3f}"
         )
 
@@ -215,8 +266,8 @@ def print_analysis(er: dict, kr: dict, sizes: list[int]):
     print("─" * 60)
 
     # Variación respecto a N
-    ecdsa_sign_times  = [er[n]["sign"][0] for n in sizes]
-    kcdsa_sign_times  = [kr[n]["sign"][0] for n in sizes]
+    ecdsa_sign_times  = [er[n]["sign"].minimum for n in sizes]
+    kcdsa_sign_times  = [kr[n]["sign"].minimum for n in sizes]
 
     def variation(times):
         return (max(times) - min(times)) / statistics.mean(times) * 100
@@ -231,12 +282,12 @@ def print_analysis(er: dict, kr: dict, sizes: list[int]):
     )
 
     avg_ratio_s = statistics.mean(
-        er[n]["sign"][0] / kr[n]["sign"][0] for n in sizes
-        if kr[n]["sign"][0] > 0
+        er[n]["sign"].minimum / kr[n]["sign"].minimum for n in sizes
+        if kr[n]["sign"].minimum > 0
     )
     avg_ratio_v = statistics.mean(
-        er[n]["verify"][0] / kr[n]["verify"][0] for n in sizes
-        if kr[n]["verify"][0] > 0
+        er[n]["verify"].minimum / kr[n]["verify"].minimum for n in sizes
+        if kr[n]["verify"].minimum > 0
     )
     print(
         f"\n  Ratio medio ECDSA / EC-KCDSA:\n"
@@ -284,14 +335,14 @@ def try_plot(er: dict, kr: dict, sizes: list[int], out: str = "benchmark_results
     labels = [f"{s:,}" for s in sizes]
     w      = 0.35
 
-    ecdsa_sign    = [er[n]["sign"][0]   for n in sizes]
-    ecdsa_sign_e  = [er[n]["sign"][1]   for n in sizes]
-    ecdsa_verify  = [er[n]["verify"][0] for n in sizes]
-    ecdsa_verify_e= [er[n]["verify"][1] for n in sizes]
-    kcdsa_sign    = [kr[n]["sign"][0]   for n in sizes]
-    kcdsa_sign_e  = [kr[n]["sign"][1]   for n in sizes]
-    kcdsa_verify  = [kr[n]["verify"][0] for n in sizes]
-    kcdsa_verify_e= [kr[n]["verify"][1] for n in sizes]
+    ecdsa_sign    = [er[n]["sign"].minimum   for n in sizes]
+    ecdsa_sign_e  = [er[n]["sign"].std       for n in sizes]
+    ecdsa_verify  = [er[n]["verify"].minimum for n in sizes]
+    ecdsa_verify_e= [er[n]["verify"].std     for n in sizes]
+    kcdsa_sign    = [kr[n]["sign"].minimum   for n in sizes]
+    kcdsa_sign_e  = [kr[n]["sign"].std       for n in sizes]
+    kcdsa_verify  = [kr[n]["verify"].minimum for n in sizes]
+    kcdsa_verify_e= [kr[n]["verify"].std     for n in sizes]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     colors = {"ecdsa": "#1f77b4", "kcdsa": "#ff7f0e"}
@@ -371,6 +422,14 @@ def main():
     print(f"  Hash   : SHA-256")
     print(f"  Reps   : {args.reps}  |  Warmup: {args.warmup}")
     print(f"  N sizes: {sizes}")
+    print(f"  Métrica: mínimo ± σ (ms)  —  el mínimo estima el coste real")
+    print(f"{'─'*60}")
+    print(f"  Entorno de ejecución")
+    print(f"    Python : {platform.python_implementation()} {platform.python_version()}"
+          f"  ({sys.executable})")
+    print(f"    SO     : {platform.platform()}")
+    print(f"    CPU    : {platform.processor() or 'desconocido'}"
+          f"  ({platform.machine()})")
     print(f"{'═'*60}\n")
 
     print("  [1/2] Midiendo ECDSA …")
