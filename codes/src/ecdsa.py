@@ -32,29 +32,17 @@ import hashlib
 import secrets
 from .ec import Curve, Point, SECP256K1
 
-
-# ──────────────────────────────────────────────────────────────────────
 # Funciones auxiliares internas
-# ──────────────────────────────────────────────────────────────────────
 
 def _hash_a_entero(mensaje: bytes) -> int:
     """Devuelve SHA-256(mensaje) como entero big-endian."""
     return int.from_bytes(hashlib.sha256(mensaje).digest(), "big")
 
-
-# ──────────────────────────────────────────────────────────────────────
 # API pública
-# ──────────────────────────────────────────────────────────────────────
 
 def keygen(curva: Curve = SECP256K1) -> tuple[int, Point]:
     """
-    Genera un par de claves ECDSA sobre *curva*.
-
-    Retorna
-    -------
-    (d, Q)
-        d : int   — clave privada, d ∈ [1, n−1]
-        Q : Point — clave pública, Q = d · G
+    Genera un par de claves ECDSA sobre curva.
     """
     d = secrets.randbelow(curva.n - 1) + 1   # d ∈ [1, n−1]
     Q = curva.mul(d, curva.G)
@@ -67,36 +55,26 @@ def sign(
     curva: Curve = SECP256K1,
 ) -> tuple[int, int]:
     """
-    Genera una firma ECDSA para *mensaje*.
-
-    Parámetros
-    ----------
-    mensaje : bytes  — texto plano de longitud arbitraria.
-    d       : int    — clave privada del firmante.
-    curva   : Curve  — parámetros de dominio (por defecto: secp256k1).
-
-    Retorna
-    -------
-    (r, s) : tuple[int, int]
+    Genera una firma ECDSA para mensaje.
     """
     n = curva.n
     e = _hash_a_entero(mensaje)
 
     while True:
-        # Paso 1 – nonce aleatorio
+        # Paso 1 - secreto aleatorio
         k = secrets.randbelow(n - 1) + 1           # k ∈ [1, n−1]
 
-        # Paso 2 – clave pública efímera
+        # Paso 2 - clave publica efímera
         R = curva.mul(k, curva.G)
-        assert R is not None                        # k·G nunca es ∞ para k ∈ [1, n−1]
+        assert R is not None                       # k.G nunca es infinito para k ∈ [1, n−1]
         x1, _ = R
 
-        # Paso 3 – primera componente de la firma
+        # Paso 3 - primera componente de la firma
         r = x1 % n
         if r == 0:
             continue
 
-        # Paso 5 – segunda componente de la firma
+        # Paso 5 - segunda componente de la firma
         s = pow(k, -1, n) * (e + d * r) % n
         if s == 0:
             continue
@@ -112,38 +90,27 @@ def verify(
 ) -> bool:
     """
     Verifica una firma ECDSA.
-
-    Parámetros
-    ----------
-    mensaje : bytes      — el mensaje firmado.
-    firma   : (r, s)     — par de firma (enteros).
-    Q       : Point      — clave pública del firmante.
-    curva   : Curve      — parámetros de dominio.
-
-    Retorna
-    -------
-    True si la firma es válida, False en caso contrario.
     """
     r, s = firma
     n = curva.n
 
-    # Paso 1 – verificación de rango
+    # Paso 1 - verificacion de rango
     if not (1 <= r <= n - 1 and 1 <= s <= n - 1):
         return False
 
-    # Paso 2 – hash del mensaje
+    # Paso 2 - hash del mensaje
     e = _hash_a_entero(mensaje)
 
-    # Pasos 3-4 – valores intermedios
+    # Pasos 3-4 - valores intermedios
     w  = pow(s, -1, n)
     u1 = e * w % n
     u2 = r * w % n
 
-    # Paso 5 – reconstruir el punto
+    # Paso 5 - reconstruir el punto
     X = curva.add(curva.mul(u1, curva.G), curva.mul(u2, Q))
     if X is None:
         return False
 
-    # Paso 6 – comparar
+    # Paso 6 - comparar
     x1, _ = X
     return x1 % n == r

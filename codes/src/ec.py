@@ -1,21 +1,3 @@
-"""
-Aritmética de curvas elípticas sobre F_p (campo primo).
-
-Implementa la ley de grupo para curvas de Weierstrass cortas:
-
-    E : y² = x³ + ax + b  sobre F_p,  Δ = -16(4a³ + 27b²) ≠ 0
-
-Los puntos se representan como tuplas (x, y); el punto en el infinito
-se representa con None.
-
-Toda la aritmética usa enteros de precisión arbitraria de Python y
-pow(base, exp, mod) con tres argumentos (Python ≥ 3.8) para inversas
-modulares y exponenciación modular eficiente.
-
-NOTA: la multiplicación escalar corre en tiempo variable y NO es
-resistente a ataques de canal lateral. Solo para uso académico.
-"""
-
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
@@ -26,8 +8,7 @@ Point = Optional[tuple[int, int]]
 
 @dataclass(frozen=True)
 class Curve:
-    """Contenedor inmutable de parámetros de dominio de curva elíptica."""
-
+    """Contenedor inmutable de parametros de dominio de curva eliptica."""
     name: str
     p: int   # Primo del campo (característica de F_p)
     a: int   # Coeficiente de Weierstrass  a  en y² = x³ + ax + b
@@ -37,9 +18,7 @@ class Curve:
     n: int   # Orden de G  (primo)
     h: int   # Cofactor  h = #E(F_p) / n
 
-    # ------------------------------------------------------------------
     # Propiedades de conveniencia
-    # ------------------------------------------------------------------
 
     @property
     def G(self) -> Point:
@@ -51,12 +30,10 @@ class Curve:
         """Longitud en bits del primo del campo p."""
         return self.p.bit_length()
 
-    # ------------------------------------------------------------------
     # Validación
-    # ------------------------------------------------------------------
 
     def esta_en_curva(self, P: Point) -> bool:
-        """Devuelve True si P satisface la ecuación de la curva (None → True)."""
+        """Devuelve True si P satisface la ecuacion de la curva (None -> True)."""
         if P is None:
             return True
         x, y = P
@@ -64,16 +41,14 @@ class Curve:
         lado_der = (pow(x, 3, self.p) + self.a * x + self.b) % self.p
         return lado_izq == lado_der
 
-    # Alias en inglés para compatibilidad con los tests
+    # Alias en ingles para compatibilidad con los tests
     def is_on_curve(self, P: Point) -> bool:
         return self.esta_en_curva(P)
 
-    # ------------------------------------------------------------------
     # Operaciones del grupo
-    # ------------------------------------------------------------------
 
     def neg(self, P: Point) -> Point:
-        """Devuelve −P (el inverso del grupo para P)."""
+        """Devuelve -P (el inverso del grupo para P)."""
         if P is None:
             return None
         return (P[0], (-P[1]) % self.p)
@@ -83,11 +58,11 @@ class Curve:
         Calcula P + Q usando la regla de cuerda y tangente.
 
         Casos tratados:
-          P = ∞  →  Q
-          Q = ∞  →  P
+          P = infinito  →  Q
+          Q = infinito  →  P
           P = Q  →  doblado (tangente)
-          P = −Q →  ∞
-          otro   →  fórmula de la cuerda
+          P = -Q →  infinito
+          otro   →  formula de la cuerda
         """
         if P is None:
             return Q
@@ -100,16 +75,16 @@ class Curve:
 
         if x1 == x2:
             if y1 != y2:
-                # P = −Q  →  P + Q = ∞
+                # P = -Q  →  P + Q = infinito
                 return None
             # P = Q  →  doblado de punto
             if y1 == 0:
-                # Tangente vertical; resultado es ∞
+                # Tangente vertical, resultado es 
                 return None
             # λ = (3x₁² + a) / (2y₁)  mod p
             lam = (3 * x1 * x1 + self.a) * pow(2 * y1, -1, p) % p
         else:
-            # λ = (y₂ − y₁) / (x₂ − x₁)  mod p
+            # λ = (y₂ - y₁) / (x₂ - x₁)  mod p
             lam = (y2 - y1) * pow(x2 - x1, -1, p) % p
 
         x3 = (lam * lam - x1 - x2) % p
@@ -118,9 +93,9 @@ class Curve:
 
     def mul(self, k: int, P: Point) -> Point:
         """
-        Calcula el múltiplo escalar k·P (doble y suma, izquierda a derecha).
+        Calcula el multiplo escalar k.P (doble y suma, izquierda a derecha).
 
-        Maneja k = 0, k < 0 y P = ∞ como casos especiales.
+        Maneja k = 0, k < 0 y P = infinito como casos especiales.
         """
         if k == 0 or P is None:
             return None
@@ -137,11 +112,9 @@ class Curve:
         return resultado
 
 
-# ======================================================================
-# Parámetros de curvas estándar
-# ======================================================================
+# Parametros de curvas estándar
 
-# secp256k1 – curva de Koblitz usada por Bitcoin y Ethereum.
+# secp256k1 - curva de Koblitz usada por Bitcoin y Ethereum.
 # a = 0, b = 7  →  y² = x³ + 7
 SECP256K1 = Curve(
     name="secp256k1",
@@ -154,8 +127,8 @@ SECP256K1 = Curve(
     h=1,
 )
 
-# NIST P-256 (secp256r1) – usada en TLS 1.3 y FIPS 186-5.
-# a = p − 3  (≡ −3 mod p)
+# NIST P-256 (secp256r1) - usada en TLS 1.3 y FIPS 186-5.
+# a = p - 3  (≡ -3 mod p)
 P256 = Curve(
     name="P-256",
     p=0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF,

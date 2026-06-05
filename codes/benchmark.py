@@ -1,34 +1,3 @@
-#!/usr/bin/env python3
-"""
-Benchmark: ECDSA vs EC-KCDSA — rendimiento con mensajes de longitud N.
-
-Métricas medidas
-────────────────
-  • keygen   — generación de par de claves
-  • sign     — firma de un mensaje de N bytes
-  • verify   — verificación de una firma
-
-Para cada N se realizan REPS repeticiones tras WARMUP ejecuciones de
-calentamiento (no contabilizadas).  Se reporta el MÍNIMO ± desviación
-estándar: en benchmarking el ruido del sistema (planificador del SO, GC,
-frecuencia de CPU) solo AÑADE tiempo, por lo que el mínimo es el estimador
-más estable del coste real del algoritmo.
-
-Hipótesis a observar
-─────────────────────
-  1. El tiempo de firma/verificación es esencialmente CONSTANTE respecto
-     a N: las operaciones de curva elíptica dominan; el SHA-256 es
-     despreciable incluso para N = 64 KB.
-  2. EC-KCDSA sign prescinde de k⁻¹ mod n → debería ser ligeramente
-     más rápido que ECDSA sign.
-  3. EC-KCDSA verify prescinde de s⁻¹ mod n → idem para verify.
-
-Uso:
-    cd codes/
-    python benchmark.py
-    python benchmark.py --reps 30 --sizes 64,1024,65536
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -52,9 +21,7 @@ DEFAULT_REPS  = 1000   # más repeticiones → mínimo más estable (el ruido so
 DEFAULT_WARMUP = 5    # llena cachés de CPU y resuelve atributos antes de medir
 
 
-# ──────────────────────────────────────────────────────────────────────
 # Low-level timing helper
-# ──────────────────────────────────────────────────────────────────────
 
 def _timeit(fn: Callable, *args, reps: int) -> list[float]:
     """Ejecuta fn(*args) *reps* veces; devuelve los tiempos en milisegundos.
@@ -100,10 +67,7 @@ def _stats(times: list[float]) -> Stats:
         std=statistics.stdev(times) if len(times) > 1 else 0.0,
     )
 
-
-# ──────────────────────────────────────────────────────────────────────
 # Per-algorithm benchmark runners
-# ──────────────────────────────────────────────────────────────────────
 
 def bench_ecdsa(sizes: list[int], reps: int, warmup: int) -> dict:
     """
@@ -189,10 +153,7 @@ def bench_ec_kcdsa(sizes: list[int], reps: int, warmup: int) -> dict:
 
     return results
 
-
-# ──────────────────────────────────────────────────────────────────────
 # Output helpers
-# ──────────────────────────────────────────────────────────────────────
 
 def _ms(s: Stats) -> str:
     """Formatea un Stats como 'mín ± σ' (ms); el mínimo es la métrica principal."""
@@ -313,10 +274,7 @@ def print_analysis(er: dict, kr: dict, sizes: list[int]):
         )
     print()
 
-
-# ──────────────────────────────────────────────────────────────────────
 # Conteo de operaciones de curva  (métrica independiente del hardware)
-# ──────────────────────────────────────────────────────────────────────
 
 class CountingCurve:
     """Envoltura sobre una :class:`Curve` que cuenta las operaciones de curva
@@ -365,12 +323,12 @@ def count_curve_ops() -> dict:
     cc = CountingCurve(CURVE)
     out: dict = {"ECDSA": {}, "EC-KCDSA": {}}
 
-    # ── ECDSA ───────────────────────────────────────────────────────────
+    # ECDSA
     cc.reset(); d, Q = ecdsa.keygen(cc);              out["ECDSA"]["keygen"] = (cc.muls, cc.adds)
     cc.reset(); sig = ecdsa.sign(msg, d, cc);          out["ECDSA"]["sign"]   = (cc.muls, cc.adds)
     cc.reset(); ecdsa.verify(msg, sig, Q, cc);         out["ECDSA"]["verify"] = (cc.muls, cc.adds)
 
-    # ── EC-KCDSA ────────────────────────────────────────────────────────
+    # EC-KCDSA
     cc.reset(); d, Q, h = ec_kcdsa.keygen(cc);         out["EC-KCDSA"]["keygen"] = (cc.muls, cc.adds)
     cc.reset(); sig = ec_kcdsa.sign(msg, d, h, cc);    out["EC-KCDSA"]["sign"]   = (cc.muls, cc.adds)
     cc.reset(); ec_kcdsa.verify(msg, sig, Q, h, cc);   out["EC-KCDSA"]["verify"] = (cc.muls, cc.adds)
@@ -399,10 +357,7 @@ def print_op_counts(oc: dict):
     )
     print()
 
-
-# ──────────────────────────────────────────────────────────────────────
 # Tamaño de claves y firmas
-# ──────────────────────────────────────────────────────────────────────
 
 def measure_sizes() -> dict:
     """Mide el tamaño serializado (bytes) de claves y firmas de cada algoritmo.
@@ -462,10 +417,7 @@ def print_sizes(sz: dict):
     )
     print()
 
-
-# ──────────────────────────────────────────────────────────────────────
 # Optional matplotlib chart
-# ──────────────────────────────────────────────────────────────────────
 
 def try_plot(er: dict, kr: dict, sizes: list[int], reps: int, out: str = "benchmark_results.png"):
     try:
@@ -526,10 +478,7 @@ def try_plot(er: dict, kr: dict, sizes: list[int], reps: int, out: str = "benchm
     plt.savefig(out, dpi=150)
     print(f"  Gráfica guardada en: {out}\n")
 
-
-# ──────────────────────────────────────────────────────────────────────
 # CLI
-# ──────────────────────────────────────────────────────────────────────
 
 def parse_args():
     p = argparse.ArgumentParser(description="Benchmark ECDSA vs EC-KCDSA")
